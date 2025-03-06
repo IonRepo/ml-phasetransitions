@@ -1,0 +1,9 @@
+notebook
+numpy
+torch
+scipy
+pymatgen
+simplejson
+matplotlib
+seaborn
+pandas
