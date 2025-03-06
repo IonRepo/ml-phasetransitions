@@ -1,6 +1,7 @@
 notebook
 numpy
 torch
+torch_geometric
 scipy
 pymatgen
 simplejson

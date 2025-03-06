@@ -1,28 +1,27 @@
 import numpy               as np
 import torch               as torch
 import torch.nn.functional as F
-import os
 
 from scipy.optimize          import curve_fit
 from torch_geometric.loader  import DataLoader
-from torch_geometric.data    import Data, Batch
+from torch_geometric.data    import Batch
 from torch.nn                import Linear
 from torch_geometric.nn      import GraphConv, global_mean_pool
-from pymatgen.core.structure import Structure
-
-import sys
-sys.path.append('../../UPC')
-from GenerativeModels.libraries.graph import graph_POSCAR_encoding
-from GenerativeModels.libraries.model import add_features_to_graph
 
 # Checking if pytorch can run in GPU, else CPU
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-class GCNN(torch.nn.Module):
+class GCNN(
+    torch.nn.Module
+):
     """Graph convolution neural network.
     """
     
-    def __init__(self, features_channels, pdropout):
+    def __init__(
+            self,
+            features_channels,
+            pdropout
+    ):
         """Initializes the Graph Convolutional Neural Network.
 
         Args:
@@ -49,7 +48,14 @@ class GCNN(torch.nn.Module):
         
         self.pdropout = pdropout
 
-    def forward(self, x, edge_index, edge_attr, batch, return_graph_embedding=False):
+    def forward(
+            self,
+            x,
+            edge_index,
+            edge_attr,
+            batch,
+            return_graph_embedding=False
+    ):
         ## CONVOLUTION
         
         # Apply graph convolution with ReLU activation function
@@ -81,151 +87,12 @@ class GCNN(torch.nn.Module):
         return x
 
 
-def generate_graph(current_path, encoding_type='sphere-images', distance_thd=6):
-    """Generate a graph from a given POSCAR file.
-    
-    Args:
-        current_path (str):             Path to the POSCAR file.
-        temperature  (float, optional): Temperature value. Defaults to None.
-        encoding_type (str):            Encoding architecture. Defaults to 'sphere-images'.
-        distance_thd (float, optional): Distance threshold for encoding. Defaults to 6.
-    
-    Returns:
-        Data: A graph in PyTorch Geometric's Data format.
-    """
-
-    # Read POSCAR information
-    structure = Structure.from_file(f'{current_path}/POSCAR')
-
-    try:
-        nodes, edges, attributes = graph_POSCAR_encoding(structure,
-                                                         encoding_type=encoding_type,
-                                                         distance_threshold=distance_thd
-                                                         )
-    
-        # Generate the graph
-        temp = Data(x=nodes,
-                    edge_index=edges.t().contiguous(),
-                    edge_attr=attributes
-                   )
-        return temp
-    except TypeError:
-        return None
-
-
-def create_predictions_dataset(path_to_folder, path_to_material=False, path_to_polymorph=False):
-    """Create dataset for predictions.
-    
-    Args:
-        path_to_folder (str): Path to the folder containing POSCAR files.
-    
-    Returns:
-        list: List of graphs in PyTorch Geometric's Data format for predictions and their labels.
-    """
-
-    dataset = []
-    labels  = []
-
-    elements = os.listdir(path_to_folder)
-    if path_to_material:
-        elements = ['./']
-
-    for element in elements:
-        path_to_element = os.path.join(path_to_folder, element)
-        if os.path.isdir(path_to_element):
-            polymorphs = os.listdir(path_to_element)
-            if path_to_polymorph:
-                polymorphs = ['./']
-
-            for polymorf in polymorphs:
-                path_to_polymorf = os.path.join(path_to_element, polymorf)
-                if os.path.isdir(path_to_polymorf):
-                    # Generate graph
-                    try:
-                        data = generate_graph(path_to_polymorf)
-                    except ValueError:
-                        print(f'Error: some element is not available for {polymorf}')
-                        continue
-
-                    if data is None:
-                        continue
-
-                    # Append graph and label
-                    dataset.append(data)
-                    labels.append(f'{element} {polymorf}')
-    return dataset, labels
-
-
-def standarize_dataset(dataset, standardized_parameters, transformation='inverse-quadratic'):
-    """Standardize the dataset. Non-linear normalization is also implemented.
-    
-    Args:
-        dataset                 (list):  List of graphs in PyTorch Geometric's Data format.
-        standardized_parameters (dict):  Parameters needed to re-scale predicted properties from the dataset.
-    
-    Returns:
-        list: Standardized dataset.
-    """
-
-    # Read dataset parameters for re-scaling
-    edge_mean = standardized_parameters['edge_mean']
-    feat_mean = standardized_parameters['feat_mean']
-    scale     = standardized_parameters['scale']
-    edge_std  = standardized_parameters['edge_std']
-    feat_std  = standardized_parameters['feat_std']
-    
-    # Check if non-linear standardization
-    if transformation == 'inverse-quadratic':
-        for data in dataset:
-            data.edge_attr = 1 / data.edge_attr.pow(2)
-
-    for data in dataset:
-        data.edge_attr = (data.edge_attr - edge_mean) * scale / edge_std
-
-    for feat_index in range(dataset[0].num_node_features):
-        for data in dataset:
-            data.x[:, feat_index] = (data.x[:, feat_index] - feat_mean[feat_index]) * scale / feat_std[feat_index]
-    return dataset
-
-
-def include_temperatures(dataset, temperatures, standardized_parameters):
-    """Include temperatures (standardized as well).
-    
-    Args:
-        dataset                 (list):  List of graphs in PyTorch Geometric's Data format.
-        temperatures            (list):  List of temperatures to include.
-        standardized_parameters (dict):  Parameters needed to re-scale predicted properties from the dataset.
-
-    Returns:
-        list: Dataset with included temperatures.
-    """
-
-    # Read dataset parameters for re-scaling
-    feat_mean = standardized_parameters['feat_mean'][-1].cpu().numpy()
-    scale     = standardized_parameters['scale'].cpu().numpy()
-    feat_std  = standardized_parameters['feat_std'][-1].cpu().numpy()
-
-    # Normalize the temperature
-    normalized_temperatures = (temperatures - feat_mean) * scale / feat_std
-
-    pred_dataset = []
-    for data in dataset:
-        for normalized_temperature in normalized_temperatures:
-            # Clone graph
-            temp_data = data.clone()
-
-            # Include the temperature as a new feature in node attributes
-            temp_data = add_features_to_graph(temp_data,
-                                              torch.tensor([normalized_temperature],
-                                                           dtype=torch.float)
-                                              )
-
-            # Append the new graph
-            pred_dataset.append(temp_data)
-    return pred_dataset
-
-
-def make_predictions(reference_dataset, pred_dataset, model, standardized_parameters):
+def make_predictions(
+        reference_dataset,
+        pred_dataset,
+        model,
+        standardized_parameters
+):
     """Make predictions.
     
     Args:
@@ -269,7 +136,12 @@ def make_predictions(reference_dataset, pred_dataset, model, standardized_parame
     return predictions.cpu().numpy(), uncertainties
 
 
-def Helmholtz_free_energy_function(x, alpha, beta, gamma):
+def Helmholtz_free_energy_function(
+        x,
+        alpha,
+        beta,
+        gamma
+):
     """Smoothes the Helmholtz free energy with a physically informed function.
     The parameters beta and gamma are defined positively and re-scaled for improved fitting.
 
@@ -294,7 +166,12 @@ def Helmholtz_free_energy_function(x, alpha, beta, gamma):
     return alpha + beta * x ** 2 + gamma * x ** 4
 
 
-def compute_coefficients(temperatures, predictions, uncertainties, s):
+def compute_coefficients(
+        temperatures,
+        predictions,
+        uncertainties,
+        s
+):
     """Smooth the predictions and obtain parameters from Helmholtz_free_energy_function.
     Beta and gamma are set to negative, which actually does not change anything at Helmholtz_free_energy_function fitting.
     
@@ -340,7 +217,10 @@ def compute_coefficients(temperatures, predictions, uncertainties, s):
     return coefficients
 
 
-def compute_Fv(temperatures, coefficients):
+def compute_Fv(
+        temperatures,
+        coefficients
+):
     """Compute predictions from coefficients.
     
     Args:
@@ -360,7 +240,11 @@ def compute_Fv(temperatures, coefficients):
     return np.array(Fv_pred)
 
 
-def estimate_out_of_distribution(r_dataset, t_dataset, model):
+def estimate_out_of_distribution(
+        r_dataset,
+        t_dataset,
+        model
+):
     """We use the pooling from a graph neural network, which is a vector representation of the
     material, to assess the similarity between the target graph with respect to the dataset.
 
