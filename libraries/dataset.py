@@ -37,7 +37,7 @@ def create_predictions_dataset(
                 if os.path.isdir(path_to_polymorf):
                     # Generate graph
                     try:
-                        data = generate_graph(path_to_polymorf)
+                        data = generate_graph(path_to_polymorf, label=f'{element} {polymorf}')
                     except ValueError:
                         print(f'Error: some element is not available for {polymorf}')
                         continue
@@ -47,8 +47,7 @@ def create_predictions_dataset(
 
                     # Append graph and label
                     dataset.append(data)
-                    labels.append(f'{element} {polymorf}')
-    return dataset, labels
+    return dataset
 
 
 def standarize_dataset(

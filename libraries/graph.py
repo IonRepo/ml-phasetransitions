@@ -8,6 +8,7 @@ from pymatgen.core.structure import Structure
 
 def generate_graph(
         current_path,
+        label='',
         distance_thd=6
 ):
     """Generate a graph from a given POSCAR file.
@@ -32,7 +33,8 @@ def generate_graph(
         # Generate the graph
         temp = Data(x=nodes,
                     edge_index=edges.t().contiguous(),
-                    edge_attr=attributes
+                    edge_attr=attributes,
+                    label=label
                    )
         return temp
     except TypeError:
