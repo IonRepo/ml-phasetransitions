@@ -4,4 +4,3 @@ __pycache__
 target_dataset
 model/ref_std_dataset.pt
 output
-data
