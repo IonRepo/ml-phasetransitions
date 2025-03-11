@@ -8,3 +8,4 @@ simplejson
 matplotlib
 seaborn
 pandas
+openpyxl
