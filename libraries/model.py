@@ -194,7 +194,7 @@ def compute_coefficients(
         F_exp = predictions[idx0:idxf]
         s_exp = uncertainties[idx0:idxf]
 
-        if np.all(np.max(s_exp) < s * np.max(np.abs(F_exp))):
+        if np.all(np.max(s_exp) < s * np.abs(np.max(F_exp) - np.min(F_exp))):
             # Fitting to a 4-degree polynomial
             try:
                 _beta_, _s_beta_ = curve_fit(Helmholtz_free_energy_function,
