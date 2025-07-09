@@ -1,4 +1,4 @@
-# ml-phasetransitions
+# Machine Learning-Guided Discovery of Temperature-Induced Solid-Solid Phase Transitions in Inorganic Materials
 
 In the pursuit of energy-efficient and environmentally friendly cooling technologies, barocaloric materials have emerged as promising candidates due to their substantial thermal changes under applied pressure. The discovery of new materials with enhanced thermodynamic-related effects is essential for the advancement of solid-state cooling devices. To address this challenge, we introduce a novel approach based on Graph Convolutional Neural Networks (GCNNs) to predict the phase transitions of materials in large datasets such as the Materials Project database.
     
