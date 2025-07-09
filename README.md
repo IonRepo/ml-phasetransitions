@@ -1,4 +1,4 @@
-# PhaseTransitions
+# ml-phasetransitions
 
 In the pursuit of energy-efficient and environmentally friendly cooling technologies, barocaloric materials have emerged as promising candidates due to their substantial thermal changes under applied pressure. The discovery of new materials with enhanced thermodynamic-related effects is essential for the advancement of solid-state cooling devices. To address this challenge, we introduce a novel approach based on Graph Convolutional Neural Networks (GCNNs) to predict the phase transitions of materials in large datasets such as the Materials Project database.
     
@@ -31,8 +31,8 @@ Detailed explanations on the utilities of the library are shown in the examples 
 To download the repository and install the required dependencies:
 
 ```bash
-git clone https://github.com/YourUsername/PhaseTransitions.git
-cd PhaseTransitions
+git clone https://github.com/YourUsername/ml-phasetransitions.git
+cd ml-phasetransitions
 pip3 install -r requirements.txt
 ```
 
