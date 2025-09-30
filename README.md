@@ -18,20 +18,20 @@ Detailed explanations on the utilities of the library are shown in the examples 
 
 ### Example steps:
 
-1. **Data Preparation**: Ensure your dataset includes crystal structures in POSCAR format and associated ground state energy (EPA) files. Materials must include atomic information such as mass, charge, and ionization energy.
+- **Data Preparation**: Ensure your dataset includes crystal structures in POSCAR format and associated ground state energy (EPA) files. Materials must include atomic information such as mass, charge, and ionization energy.
    
-2. **Training/Prediction**: The script allows for both training a new model and using a pretrained GCNN model. You can configure the training settings through the provided notebook interface.
+- **Training/Prediction**: The script allows for both training a new model and using a pretrained GCNN model. You can configure the training settings through the provided notebook interface.
 
-3. **Run Model**: Once data is prepared and the model is trained, use the example notebook to make predictions on your dataset.
+- **Run Model**: Once data is prepared and the model is trained, use the example notebook to make predictions on your dataset.
 
-4. **Analysis**: Visualization tools are included to plot phase transitions, entropy changes, and the transition temperatures for materials in the dataset.
+- **Analysis**: Visualization tools are included to plot phase transitions, entropy changes, and the transition temperatures for materials in the dataset.
 
 ## Installation
 
 To download the repository and install the required dependencies:
 
 ```bash
-git clone https://github.com/YourUsername/ml-phasetransitions.git
+git clone https://github.com/IonRepo/ml-phasetransitions.git
 cd ml-phasetransitions
 pip3 install -r requirements.txt
 ```
