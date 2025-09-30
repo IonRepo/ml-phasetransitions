@@ -128,7 +128,7 @@ def make_predictions(
             
             # Append predictions to lists
             predictions.append(pred.cpu().detach())
-            uncertainties.append(np.sqrt(uncer))
+            uncertainties.append(uncer)
 
     # Concatenate predictions and ground truths into single arrays
     predictions   = torch.cat(predictions) * target_std / scale + target_mean
@@ -243,7 +243,8 @@ def compute_Fv(
 def estimate_out_of_distribution(
         r_dataset,
         t_dataset,
-        model
+        model,
+        k=3
 ):
     """We use the pooling from a graph neural network, which is a vector representation of the
     material, to assess the similarity between the target graph with respect to the dataset.
@@ -252,6 +253,7 @@ def estimate_out_of_distribution(
         r_dataset (list):            The reference dataset, as a list of graphs in PyTorch Geometric's Data format.
         t_dataset (list):            Target dataset to assess the similarity on.
         model     (torch.nn.Module): PyTorch model for predictions.
+        k         (int): Number of neighbors for mean distance (default: 3).
 
     Returns:
         list ints:   Indexes of the closest example referred to the reference dataset.
@@ -267,6 +269,7 @@ def estimate_out_of_distribution(
 
     # Create a DataLoader for the reference dataset
     r_loader = DataLoader(r_dataset, batch_size=64, shuffle=False)
+    all_r_embeddings = []
 
     # Process the reference dataset in batches using the DataLoader
     for r_batch in r_loader:
@@ -275,6 +278,7 @@ def estimate_out_of_distribution(
             r_batch.x, r_batch.edge_index, r_batch.edge_attr, r_batch.batch,
             return_graph_embedding=True
         )
+        all_r_embeddings.append(r_embeddings)
 
         # Compute pairwise distances
         pairwise_distances = torch.cdist(t_embeddings, r_embeddings)
@@ -282,5 +286,15 @@ def estimate_out_of_distribution(
         # Update global closest distances
         closest_distances = torch.minimum(closest_distances, torch.min(pairwise_distances, dim=1).values)
 
+    r_embeddings = torch.cat(all_r_embeddings, dim=0)  # [N_r, d]
+
+    # Pairwise distances
+    pairwise = torch.cdist(r_embeddings, r_embeddings)  # [N_r, N_r]
+    
+    # k-NN distances (exclude self by skipping first column)
+    knn_dists, _ = torch.topk(pairwise, k + 1, largest=False, dim=1)
+    knn_means = knn_dists[:, 1:].mean(dim=1)  # [N_r]
+    knn_means_avg = torch.mean(knn_means)
+
     # Move results to CPU and return as a list
-    return closest_distances.cpu().numpy()
+    return closest_distances.cpu().numpy() / knn_means_avg.cpu().numpy()
