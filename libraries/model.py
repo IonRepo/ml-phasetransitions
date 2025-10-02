@@ -253,7 +253,7 @@ def estimate_out_of_distribution(
         r_dataset (list):            The reference dataset, as a list of graphs in PyTorch Geometric's Data format.
         t_dataset (list):            Target dataset to assess the similarity on.
         model     (torch.nn.Module): PyTorch model for predictions.
-        k         (int): Number of neighbors for mean distance (default: 3).
+        k         (int):             Number of neighbors for mean distance (default: 3).
 
     Returns:
         list ints:   Indexes of the closest example referred to the reference dataset.
@@ -268,7 +268,7 @@ def estimate_out_of_distribution(
     closest_distances = torch.full((t_embeddings.size(0),), float('inf'), device=device)
 
     # Create a DataLoader for the reference dataset
-    r_loader = DataLoader(r_dataset, batch_size=64, shuffle=False)
+    r_loader = DataLoader(r_dataset, batch_size=16, shuffle=False)
     all_r_embeddings = []
 
     # Process the reference dataset in batches using the DataLoader
@@ -294,7 +294,7 @@ def estimate_out_of_distribution(
     # k-NN distances (exclude self by skipping first column)
     knn_dists, _ = torch.topk(pairwise, k + 1, largest=False, dim=1)
     knn_means = knn_dists[:, 1:].mean(dim=1)  # [N_r]
-    knn_means_avg = torch.mean(knn_means)
+    knn_means_min = torch.min(knn_means)
 
     # Move results to CPU and return as a list
-    return closest_distances.cpu().numpy() / knn_means_avg.cpu().numpy()
+    return np.sqrt(closest_distances.cpu().numpy() / knn_means_min.cpu().numpy())
