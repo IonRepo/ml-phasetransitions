@@ -268,7 +268,7 @@ def estimate_out_of_distribution(
     closest_distances = torch.full((t_embeddings.size(0),), float('inf'), device=device)
 
     # Create a DataLoader for the reference dataset
-    r_loader = DataLoader(r_dataset, batch_size=16, shuffle=False)
+    r_loader = DataLoader(r_dataset, batch_size=32, shuffle=False)
     all_r_embeddings = []
 
     # Process the reference dataset in batches using the DataLoader
