@@ -168,9 +168,7 @@ def Helmholtz_free_energy_function(
 
 def compute_coefficients(
         temperatures,
-        predictions,
-        uncertainties,
-        s
+        predictions
 ):
     """Smooth the predictions and obtain parameters from Helmholtz_free_energy_function.
     Beta and gamma are set to negative, which actually does not change anything at Helmholtz_free_energy_function fitting.
@@ -192,21 +190,17 @@ def compute_coefficients(
 
         # Concatenate array
         F_exp = predictions[idx0:idxf]
-        s_exp = uncertainties[idx0:idxf]
 
-        if np.all(np.max(s_exp) < s * np.abs(np.max(F_exp) - np.min(F_exp))):
-            # Fitting to a 4-degree polynomial
-            try:
-                _beta_, _s_beta_ = curve_fit(Helmholtz_free_energy_function,
-                                             temperatures, F_exp,
-                                             p0=(1, 0, 0),
-                                             maxfev=3000)
-    
-                # Make beta and gamma negative, which actually does not change anything in Helmholtz_free_energy_function
-                _beta_[1:] = - np.abs(_beta_[1:])
-            except RuntimeError:  # Convergence not achieved
-                _beta_ = [np.nan]*3
-        else:
+        # Fitting to a 4-degree polynomial
+        try:
+            _beta_, _s_beta_ = curve_fit(Helmholtz_free_energy_function,
+                                         temperatures, F_exp,
+                                         p0=(1, 0, 0),
+                                         maxfev=3000)
+
+            # Make beta and gamma negative, which actually does not change anything in Helmholtz_free_energy_function
+            _beta_[1:] = - np.abs(_beta_[1:])
+        except RuntimeError:  # Convergence not achieved
             _beta_ = [np.nan]*3
 
         # Append coefficients and metrics
