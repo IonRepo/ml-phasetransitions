@@ -481,7 +481,7 @@ def fit_interpolator(
         RBFInterpolator: Fitted RBFInterpolator object.
     """
     # Create a DataLoader for the reference dataset
-    r_embeddings = clm.extract_embeddings(r_dataset, model)
+    r_embeddings = extract_embeddings(r_dataset, model)
 
     # Extract labels from r_dataset
     r_labels = [data.label for data in r_dataset]
