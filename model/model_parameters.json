@@ -1,0 +1,1 @@
+{"n_epochs": 200, "batch_size": 128, "learning_rate": 0.0001, "dropout": 0.2, "patience": 200, "delta": 2, "train_ratio": 0.8, "test_ratio": 0.1}

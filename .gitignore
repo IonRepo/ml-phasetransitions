@@ -3,5 +3,5 @@ __pycache__
 .DS_Store
 .venv
 target_dataset
-model/ref_std_dataset.pt
+model/*dataset*.pt
 output
