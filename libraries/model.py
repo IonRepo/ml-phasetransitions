@@ -4,19 +4,11 @@ import torch.nn.functional as F
 import torch.nn            as nn
 import os
 
-from scipy.interpolate      import RBFInterpolator, CubicSpline
-from scipy.spatial          import Delaunay
+from scipy.interpolate      import RBFInterpolator
+from scipy.optimize         import curve_fit
 from torch_geometric.loader import DataLoader
 from torch.nn               import Linear
 from torch_geometric.nn     import GraphConv, global_mean_pool
-from sklearn.decomposition  import PCA
-from sklearn.neighbors      import NearestNeighbors
-
-from scipy.optimize          import curve_fit
-from torch_geometric.loader  import DataLoader
-from torch_geometric.data    import Batch
-from torch.nn                import Linear
-from torch_geometric.nn      import GraphConv, global_mean_pool
 
 # Checking if pytorch can run in GPU, else CPU
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -100,7 +92,8 @@ def make_predictions(
         pred_dataset,
         model,
         standardized_parameters,
-        r_uncertainty_data
+        r_uncertainty_data,
+        interpolator
 ):
     """Make predictions.
     
@@ -109,6 +102,8 @@ def make_predictions(
         pred_dataset            (list):            List of graphs in PyTorch Geometric's Data format for predictions.
         model                   (torch.nn.Module): PyTorch model for predictions.
         standardized_parameters (dict):            Parameters needed to re-scale predicted properties from the dataset.
+        r_uncertainty_data      (dict):            Uncertainty data for the reference dataset.
+        interpolator            (RBFInterpolator): Fitted RBFInterpolator object for uncertainty estimation.
     
     Returns:
         numpy.ndarray: Predicted values.
@@ -124,20 +119,20 @@ def make_predictions(
     uncert_scale = r_uncertainty_data['uncert_scale']
 
     # Computing the predictions
-    dataset = DataLoader(pred_dataset, batch_size=64, shuffle=False)
+    dataset = DataLoader(pred_dataset, batch_size=16, shuffle=False)
 
     predictions   = []
     uncertainties = []
     with torch.no_grad():  # No gradients for prediction
         for data in dataset:
-            # Moving data to device
+            # Move data to device
             data = data.to(device)
 
             # Perform a single forward pass
             pred = model(data).flatten()
             
-            # Estimate out of distribution
-            uncer = analyze_uncertainty(reference_dataset, data.to_data_list(), model, r_uncertainty_data['uncertainty_values'])
+            # Estimate uncertainty
+            uncer = estimate_uncertainty(data.to_data_list(), model, interpolator)
             
             # Append predictions to lists
             predictions.append(pred.cpu().detach())
@@ -441,11 +436,10 @@ def test(
     return avg_test_loss, predictions, ground_truths
 
 
-def analyze_uncertainty(
-        r_dataset,
+def estimate_uncertainty(
         t_dataset,
         model,
-        r_uncertainty_data
+        interpolator
 ):
     """Estimate uncertainty on predictions and whether the target dataset is in the interpolation regime.
 
@@ -459,50 +453,45 @@ def analyze_uncertainty(
         numpy.ndarray: Uncertainties of the target dataset.
         numpy.ndarray: Boolean array indicating if the target embeddings
     """
-
-    # Create a DataLoader for the reference dataset
-    r_embeddings = extract_embeddings(r_dataset, model)
-
     # Create a DataLoader for the target dataset
     t_embeddings = extract_embeddings(t_dataset, model)
 
-    # Extract labels from r_dataset
-    r_labels = [data.label for data in r_dataset]
-
     # Determine the uncertainty on the predictions
-    t_uncertainties = estimate_uncertainty(r_embeddings, r_labels,
-                                           r_uncertainty_data,
-                                           t_embeddings)
-    return t_uncertainties
-
-
-def estimate_uncertainty(
-    r_embeddings,
-    r_labels,
-    r_uncertainty_data,
-    t_embeddings
-):
-    """Estimate the uncertainty of the target dataset with RBFInterpolator.
-
-    Args:
-        r_embeddings         (numpy.ndarray): Reference embeddings.
-        r_labels             (list):          Reference labels.
-        r_uncertainty_data   (dict):          Uncertainty data for the reference dataset.
-        t_embeddings         (numpy.ndarray): Target embeddings.
-
-    Returns:
-        numpy.ndarray: Uncertainties of the target dataset.
-    """
-    # Extract uncertainties for each reference example
-    r_uncertainties = np.asarray([r_uncertainty_data[label] for label in r_labels])
-
-    # Interpolate uncertainties for the target dataset
-    interpolator = RBFInterpolator(r_embeddings, r_uncertainties, smoothing=0)
     t_uncertainties = interpolator(t_embeddings)
 
     # Apply mean smoothing
     t_uncertainties = np.ones_like(t_uncertainties) * np.max(np.abs(t_uncertainties))
     return t_uncertainties
+
+
+def fit_interpolator(
+    r_uncertainty_data,
+    r_dataset,
+    model
+):
+    """
+    Fit RBFInterpolator to reference uncertainties.
+
+    Args:
+        r_uncertainty_data (dict):            Uncertainty data for the reference dataset.
+        r_dataset          (list):            Reference dataset, as a list of graphs in PyTorch Geometric's Data format.
+        model              (torch.nn.Module): The trained model.
+
+    Returns:
+        RBFInterpolator: Fitted RBFInterpolator object.
+    """
+    # Create a DataLoader for the reference dataset
+    r_embeddings = clm.extract_embeddings(r_dataset, model)
+
+    # Extract labels from r_dataset
+    r_labels = [data.label for data in r_dataset]
+
+    # Extract uncertainties for each reference example
+    r_uncertainties = np.asarray([r_uncertainty_data[label] for label in r_labels])
+
+    # Interpolate uncertainties for the target dataset
+    interpolator = RBFInterpolator(r_embeddings, r_uncertainties, smoothing=0)
+    return interpolator
 
 
 def extract_embeddings(
@@ -519,7 +508,7 @@ def extract_embeddings(
         numpy.ndarray: Embeddings extracted from the dataset.
     """
     # Create a DataLoader for the dataset
-    loader = DataLoader(dataset, batch_size=128, shuffle=False)
+    loader = DataLoader(dataset, batch_size=16, shuffle=False)
 
     # Process the reference dataset in batches using the DataLoader
     embeddings = []
