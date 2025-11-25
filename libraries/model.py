@@ -88,7 +88,6 @@ class GCNN(
 
 
 def make_predictions(
-        reference_dataset,
         pred_dataset,
         model,
         standardized_parameters,
@@ -98,7 +97,6 @@ def make_predictions(
     """Make predictions.
     
     Args:
-        reference_dataset       (list):            The reference dataset, as a list of graphs in PyTorch Geometric's Data format.
         pred_dataset            (list):            List of graphs in PyTorch Geometric's Data format for predictions.
         model                   (torch.nn.Module): PyTorch model for predictions.
         standardized_parameters (dict):            Parameters needed to re-scale predicted properties from the dataset.
@@ -109,9 +107,9 @@ def make_predictions(
         numpy.ndarray: Predicted values.
     """
     # Read dataset parameters for re-scaling
-    target_mean = standardized_parameters['target_mean']
-    scale       = standardized_parameters['scale']
-    target_std  = standardized_parameters['target_std']
+    target_mean  = standardized_parameters['target_mean']
+    target_scale = standardized_parameters['scale']
+    target_std   = standardized_parameters['target_std']
 
     # Read uncertainty parameters for re-scaling
     uncert_mean  = r_uncertainty_data['uncert_mean']
@@ -139,7 +137,7 @@ def make_predictions(
             uncertainties.append(uncer)
 
     # Concatenate predictions and ground truths into single arrays
-    predictions   = torch.cat(predictions) * target_std / scale + target_mean
+    predictions   = torch.cat(predictions) * target_std / target_scale + target_mean
     uncertainties = np.concatenate(uncertainties) * uncert_std / uncert_scale + uncert_mean  # De-standardize predictions
     return predictions.cpu().numpy(), uncertainties
 
@@ -512,10 +510,11 @@ def extract_embeddings(
 
     # Process the reference dataset in batches using the DataLoader
     embeddings = []
-    for batch in loader:
-        batch = batch.to(device)
-        embedding = model(batch, return_graph_embedding=True).cpu().numpy()
-        embeddings.append(embedding)
+    with torch.no_grad():
+        for batch in loader:
+            batch = batch.to(device)
+            embedding = model(batch, return_graph_embedding=True).cpu().numpy()
+            embeddings.append(embedding)
 
     # Concatenate all batch embeddings into a single array
     return np.concatenate(embeddings, axis=0)
