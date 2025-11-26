@@ -456,9 +456,6 @@ def estimate_uncertainty(
 
     # Determine the uncertainty on the predictions
     t_uncertainties = interpolator(t_embeddings)
-
-    # Apply mean smoothing
-    t_uncertainties = np.ones_like(t_uncertainties) * np.max(np.abs(t_uncertainties))
     return t_uncertainties
 
 
