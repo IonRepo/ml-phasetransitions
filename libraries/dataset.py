@@ -217,7 +217,7 @@ def parity_plot(
     x_val,   y_val   = validation
     x_test,  y_test  = test
 
-    plt.figure(figsize=figsize)
+    #plt.figure(figsize=figsize)
 
     if np.any(~np.isnan(train)):
         plt.plot(x_train, y_train, '.', label='Train')
@@ -227,8 +227,8 @@ def parity_plot(
         plt.plot(x_test, y_test, '.', label='Test')
 
     _min_, _max_ = get_min_max(train.flatten(), validation.flatten(), test.flatten())
-    plt.xlabel('Computed')
-    plt.ylabel('Predicted ')
+    plt.xlabel('Computed $F_v$ (meV/atom)')
+    plt.ylabel('Predicted $F_v$ (meV/atom)')
     plt.plot([_min_, _max_], [_min_, _max_], '-r')
     plt.legend(loc='best')
     if save_to is not None:
