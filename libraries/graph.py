@@ -1,6 +1,9 @@
 import numpy as np
 import torch as torch
 import sys
+import os
+
+import libraries.dataset as cld
 
 from torch_geometric.data    import Data
 from pymatgen.core.structure import Structure
@@ -36,6 +39,44 @@ def generate_graph(
                     edge_attr=attributes,
                     label=label
                    )
+        
+        # Load additional properties if requested:
+        # 1) Ground state energy (EPA) - from eV/atom to meV/atom
+        # 2) Lattice thermal conductivity (LTC) - in W/mK
+        # 3) Centrosymmetry (1 is centrosymmetric, 0 is not)
+        # 4) Space group
+
+        # Define file paths
+        epa_file    = f'{current_path}/EPA'
+        ltc_file    = f'{current_path}/LTC'
+        centro_file = f'{current_path}/is_centrosymmetric'
+        sg_file     = f'{current_path}/space_group'
+
+        # Load properties
+        temp.gs_energy = float(np.loadtxt(epa_file)) * 1e3 if os.path.isfile(epa_file) else None
+        temp.conductivity = float(np.loadtxt(ltc_file)) if os.path.isfile(ltc_file) else np.nan
+        temp.centrosymmetry = int(np.loadtxt(centro_file, dtype=int)) if os.path.isfile(centro_file) else None
+        temp.space_group = str(np.loadtxt(sg_file, dtype=str)) if os.path.isfile(sg_file) else None
+        
+        # Calculate and store total mass from POSCAR
+        poscar_file = f'{current_path}/POSCAR'
+        try:
+            with open(poscar_file, 'r') as pf:
+                poscar_lines = pf.readlines()
+                
+                composition = poscar_lines[5].split()
+                concentration = np.array(poscar_lines[6].split(), dtype=float)
+                
+                # Load atomic masses for calculation
+                atomic_masses = cld.load_atomic_masses('../input/atomic_masses.dat')
+
+                # Calculate total mass per atom
+                temp.mass_per_atom_m = sum(
+                    float(atomic_masses[el]) * conc for el, conc in zip(composition, concentration)
+                    ) / sum(concentration)
+        except (ValueError, IndexError, KeyError):
+            temp.mass_per_atom_m = None
+        
         return temp
     except TypeError:
         return None
