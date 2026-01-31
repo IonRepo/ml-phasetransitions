@@ -183,7 +183,7 @@ def predict_single_material(
     uncertainties = np.ones(len(temperatures)) * max_uncert
     
     # Compute coefficients - compute_coefficients expects predictions for single material
-    coefficients = compute_coefficients(temperatures, predictions)[0]  # Extract single result
+    coefficients = compute_coefficients(temperatures, predictions)
     
     # Add to original data object
     data.predictions   = predictions

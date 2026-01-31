@@ -68,7 +68,7 @@ def generate_graph(
                 concentration = np.array(poscar_lines[6].split(), dtype=float)
                 
                 # Load atomic masses for calculation
-                atomic_masses = cld.load_atomic_masses('../input/atomic_masses.dat')
+                atomic_masses = cld.load_atomic_masses('input/atomic_masses.dat')
 
                 # Calculate mass per atom (total mass divided by total number of atoms)
                 temp.mass_per_atom = sum(
