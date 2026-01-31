@@ -70,12 +70,12 @@ def generate_graph(
                 # Load atomic masses for calculation
                 atomic_masses = cld.load_atomic_masses('../input/atomic_masses.dat')
 
-                # Calculate total mass per atom
-                temp.mass_per_atom_m = sum(
+                # Calculate mass per atom (total mass divided by total number of atoms)
+                temp.mass_per_atom = sum(
                     float(atomic_masses[el]) * conc for el, conc in zip(composition, concentration)
                     ) / sum(concentration)
         except (ValueError, IndexError, KeyError):
-            temp.mass_per_atom_m = None
+            temp.mass_per_atom = None
         
         return temp
     except TypeError:

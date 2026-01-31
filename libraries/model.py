@@ -178,12 +178,12 @@ def predict_single_material(
         std_data_w_temp, model, standardized_parameters, uncertainty_data, interpolator
     )
 
-    # Process uncertainties
+    # Process uncertainties - take max as conservative estimate
     max_uncert    = np.max(np.abs(uncertainties))
     uncertainties = np.ones(len(temperatures)) * max_uncert
     
-    # Compute coefficients
-    coefficients = compute_coefficients(temperatures, predictions)
+    # Compute coefficients - compute_coefficients expects predictions for single material
+    coefficients = compute_coefficients(temperatures, predictions)[0]  # Extract single result
     
     # Add to original data object
     data.predictions   = predictions

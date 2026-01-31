@@ -15,11 +15,15 @@ def create_predictions_dataset(
 ):
     """Create dataset for predictions.
     
+    Always loads properties (EPA, LTC, centrosymmetry, space_group, mass_per_atom) into graph objects.
+    
     Args:
-        path_to_folder (str): Path to the folder containing POSCAR files.
+        path_to_folder    (str):  Path to the folder containing POSCAR files.
+        path_to_material  (bool): If True, only process current folder as material.
+        path_to_polymorph (bool): If True, only process current folder as polymorph.
     
     Returns:
-        list: List of graphs in PyTorch Geometric's Data format for predictions and their labels.
+        list: List of graphs in PyTorch Geometric's Data format with loaded properties.
     """
     elements = os.listdir(path_to_folder)
     if path_to_material:
