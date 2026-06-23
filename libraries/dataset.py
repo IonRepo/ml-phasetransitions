@@ -55,6 +55,121 @@ def create_predictions_dataset(
     return dataset
 
 
+def check_finite_attributes(data):
+    # Check all node attributes
+    if not torch.all(torch.isfinite(data.x)):
+        return False
+    # Check all edge attributes
+    if not torch.all(torch.isfinite(data.edge_attr)):
+        return False
+    # Check all target values
+    if not torch.all(torch.isfinite(data.y)):
+        return False
+    return True
+
+
+def standardize_dataset(
+        dataset,
+        transformation=None
+):
+    """Standardizes a given dataset (both nodes features and edge attributes).
+    Typically, a normal distribution is applied, although it be easily modified to apply other distributions.
+    Check those graphs with finite attributes and retains labels accordingly.
+
+    Currently: normal distribution.
+
+    Args:
+        dataset        (list): List containing graph structures.
+        transformation (str):  Type of transformation strategy for edge attributes (None, 'inverse-quadratic').
+
+    Returns:
+        Tuple: A tuple containing the normalized dataset and parameters needed to re-scale predicted properties.
+            - dataset_std        (list): Normalized dataset.
+            - labels_std         (list): Labels from valid graphs.
+            - dataset_parameters (dict): Parameters needed to re-scale predicted properties from the dataset.
+    """
+
+    # Clone the dataset and labels
+    dataset_std = []
+    for graph in dataset:
+        if check_finite_attributes(graph):
+            dataset_std.append(graph.clone())
+
+    # Number of graphs
+    n_graphs = len(dataset_std)
+
+    # Number of features per node
+    n_features = dataset_std[0].num_node_features
+    
+    # Number of features per graph
+    n_y = dataset_std[0].y.shape[0]
+
+    # Check if non-linear standardization
+    if transformation == 'inverse-quadratic':
+        for data in dataset_std:
+            data.edge_attr = 1 / data.edge_attr.pow(2)
+
+    epsilon = 1e-8
+
+    # Compute means
+    target_mean = torch.zeros(n_y)
+    for target_index in range(n_y):
+        target_mean[target_index] = sum([data.y[target_index] for data in dataset_std]) / n_graphs
+
+    edge_mean = sum([data.edge_attr.mean() for data in dataset_std]) / n_graphs
+
+    # Compute standard deviations
+    target_std = torch.zeros(n_y)
+    for target_index in range(n_y):
+        var = sum([(data.y[target_index] - target_mean[target_index]).pow(2).sum() for data in dataset_std]) / (n_graphs * (n_graphs - 1))
+        target_std[target_index] = torch.sqrt(var) if var > epsilon else torch.tensor(epsilon)
+
+    edge_var = sum([(data.edge_attr - edge_mean).pow(2).sum() for data in dataset_std]) / (n_graphs * (n_graphs - 1))
+    edge_std = torch.sqrt(edge_var) if edge_var > epsilon else torch.tensor(epsilon)
+
+    # In case we want to increase the values of the normalization
+    scale = torch.tensor(1e0)
+
+    target_factor = target_std / scale
+    target_factor[target_factor == 0] = epsilon
+    edge_factor   = edge_std / scale if edge_std != 0 else epsilon
+
+    # Update normalized values into the database
+    for data in dataset_std:
+        data.y         = (data.y         - target_mean) / target_factor
+        data.edge_attr = (data.edge_attr - edge_mean)   / edge_factor
+
+    # Same for the node features
+    feat_mean = torch.zeros(n_features)
+    feat_std  = torch.zeros(n_features)
+    for feat_index in range(n_features):
+        # Compute mean
+        temp_feat_mean = sum([data.x[:, feat_index].mean() for data in dataset_std]) / n_graphs
+        # Compute standard deviations
+        temp_feat_var = sum([(data.x[:, feat_index] - temp_feat_mean).pow(2).sum() for data in dataset_std]) / (n_graphs * (n_graphs - 1))
+        temp_feat_std = torch.sqrt(temp_feat_var) if temp_feat_var > epsilon else torch.tensor(epsilon)
+        # Update normalized values into the database
+        for data in dataset_std:
+            data.x[:, feat_index] = (data.x[:, feat_index] - temp_feat_mean) * scale / temp_feat_std
+        
+        # Append corresponding values for saving
+        feat_mean[feat_index] = temp_feat_mean
+        feat_std[feat_index]  = temp_feat_std
+
+    # Create and save as a dictionary
+    dataset_parameters = {
+        'transformation': transformation,
+        'target_mean':    np.array(target_mean.cpu().numpy()),
+        'feat_mean':      np.array(feat_mean.cpu().numpy()),
+        'edge_mean':      edge_mean.cpu().numpy(),
+        'target_std':     np.array(target_std.cpu().numpy()),
+        'feat_std':       np.array(feat_std.cpu().numpy()),
+        'edge_std':       edge_std.cpu().numpy(),
+        'scale':          scale.cpu().numpy()
+    }
+    return dataset_std, dataset_parameters
+
+
 def standardize_dataset_from_keys(
         dataset,
         standardized_parameters
@@ -190,6 +305,25 @@ def get_min_max(*data):
     return _min_, _max_
 
 
+def load_datasets(
+        files_names
+):
+    """Loads the training, validation, and testing datasets from disk.
+
+    Args:
+        files_names (dict): Dictionary containing the file names for the training, validation, and testing datasets.
+
+    Returns:
+        Tuple: A tuple containing the training, validation, and testing datasets
+    """
+    train_dataset = torch.load(files_names['train_dataset_std'], weights_only=False)
+    val_dataset   = torch.load(files_names['val_dataset_std'],   weights_only=False)
+    test_dataset  = torch.load(files_names['test_dataset_std'],  weights_only=False)
+
+    standardized_parameters = load_json(files_names['std_parameters'])
+    return train_dataset, val_dataset, test_dataset, standardized_parameters
+
+
 def get_datasets(
         subset_labels,
         dataset_labels,
@@ -222,14 +356,16 @@ def get_datasets(
 def split_dataset(
         train_ratio,
         test_ratio,
-        dataset
+        dataset,
+        target_folder
 ):
     """Splits the dataset into training, validation, and testing datasets regarding their labels.
 
     Args:
-        train_ratio (float): Ratio of the dataset to be used for training.
-        test_ratio  (float): Ratio of the dataset to be used for testing.
-        dataset     (list):  List of graphs in PyTorch Geometric's Data format.
+        train_ratio   (float): Ratio of the dataset to be used for training.
+        test_ratio    (float): Ratio of the dataset to be used for testing.
+        dataset       (list):  List of graphs in PyTorch Geometric's Data format.
+        target_folder (str):   Path to folder to save the splittings.
 
     Returns:
         Tuple: A tuple containing the training, validation, and testing datasets.
@@ -251,6 +387,11 @@ def split_dataset(
     train_labels = unique_labels[:train_size]
     val_labels   = unique_labels[train_size:-test_size]
     test_labels  = unique_labels[-test_size:]
+    
+    # Save this splitting for transfer-learning approaches
+    np.savetxt(f'{target_folder}/train_labels.txt',      train_labels, fmt='%s')
+    np.savetxt(f'{target_folder}/validation_labels.txt', val_labels,   fmt='%s')
+    np.savetxt(f'{target_folder}/test_labels.txt',       test_labels,  fmt='%s')
 
     # Use the computed indexes to generate train and test sets
     # We iteratively check where labels equals a unique train/test labels and append the index to a list
@@ -258,3 +399,47 @@ def split_dataset(
     val_dataset   = get_datasets(val_labels,   material_labels, dataset)
     test_dataset  = get_datasets(test_labels,  material_labels, dataset)
     return train_dataset, val_dataset, test_dataset
+
+
+def save_datasets(
+        train_dataset,
+        val_dataset,
+        test_dataset,
+        files_names
+):
+    """Saves the training, validation, and testing datasets to disk.
+
+    Args:
+        train_dataset (list): List of graphs in PyTorch Geometric's Data format.
+
+    Returns:
+        None
+    """
+    torch.save(train_dataset, files_names['train_dataset_std'])
+    torch.save(val_dataset,   files_names['val_dataset_std'])
+    torch.save(test_dataset,  files_names['test_dataset_std'])
+
+
+def save_json(
+        file,
+        file_name
+):
+    """Saves a dictionary to a JSON file.
+
+    Args:
+        file      (dict): Dictionary containing the data to be saved.
+        file_name (str):  Path to the JSON file.
+
+    Returns:
+        None
+    """
+    # Convert torch tensors to numpy arrays
+    for key, value in file.items():
+        try:
+            file[key] = value.tolist()
+        except:
+            pass
+
+    # Dump the dictionary with numpy arrays to a JSON file
+    with open(file_name, 'w') as json_file:
+        json.dump(file, json_file)
