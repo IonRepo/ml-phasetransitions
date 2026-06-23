@@ -188,3 +188,73 @@ def get_min_max(*data):
     _min_ = np.nanmin(stack)
     _max_ = np.nanmax(stack)
     return _min_, _max_
+
+
+def get_datasets(
+        subset_labels,
+        dataset_labels,
+        dataset
+):
+    """Get datasets filtered, non-ordered by labels.
+
+    Args:
+        subset_labels  (list): List of labels to filter by.
+        dataset_labels (list): List of material labels.
+        dataset        (list): List of data elements.
+
+    Returns:
+        list: Filtered dataset containing elements corresponding to the specified labels (not ordered).
+    """
+
+    subset_labels  = np.array(subset_labels)
+    dataset_labels = np.array(dataset_labels)
+    
+    dataset_idxs = []
+    for dataset_idx, dataset_label in enumerate(dataset_labels):
+        for subset_idx, subset_label in enumerate(subset_labels):
+            if dataset_label.split()[0] == subset_label:
+                dataset_idxs.append(dataset_idx)
+        if not len(subset_labels):
+            break
+    return [dataset[idx] for idx in dataset_idxs]
+
+
+def split_dataset(
+        train_ratio,
+        test_ratio,
+        dataset
+):
+    """Splits the dataset into training, validation, and testing datasets regarding their labels.
+
+    Args:
+        train_ratio (float): Ratio of the dataset to be used for training.
+        test_ratio  (float): Ratio of the dataset to be used for testing.
+        dataset     (list):  List of graphs in PyTorch Geometric's Data format.
+
+    Returns:
+        Tuple: A tuple containing the training, validation, and testing datasets.
+    """
+    # Splitting into train-test sets considering that Fvs from the same materials must be in the same dataset
+    material_labels = [data.label.split()[0] for data in dataset]
+    
+    # Define unique labels
+    unique_labels = np.unique(material_labels)
+    
+    # Shuffle the list of unique labels
+    np.random.shuffle(unique_labels)
+
+    # Define the sizes of the train and test sets
+    # Corresponds to the size wrt the number of unique materials in the dataset
+    train_size = int(train_ratio * len(unique_labels))
+    test_size  = int(test_ratio  * len(unique_labels))
+    
+    train_labels = unique_labels[:train_size]
+    val_labels   = unique_labels[train_size:-test_size]
+    test_labels  = unique_labels[-test_size:]
+
+    # Use the computed indexes to generate train and test sets
+    # We iteratively check where labels equals a unique train/test labels and append the index to a list
+    train_dataset = get_datasets(train_labels, material_labels, dataset)
+    val_dataset   = get_datasets(val_labels,   material_labels, dataset)
+    test_dataset  = get_datasets(test_labels,  material_labels, dataset)
+    return train_dataset, val_dataset, test_dataset
