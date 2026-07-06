@@ -190,6 +190,8 @@ def standardize_dataset_from_keys(
     scale     = standardized_parameters['scale']
     edge_std  = standardized_parameters['edge_std']
     feat_std  = standardized_parameters['feat_std']
+    target_mean = standardized_parameters['target_mean']
+    target_std  = standardized_parameters['target_std'] 
     
     # Check if non-linear standardization
     if standardized_parameters['transformation'] == 'inverse-quadratic':
@@ -198,6 +200,8 @@ def standardize_dataset_from_keys(
 
     for data in dataset:
         data.edge_attr = (data.edge_attr - edge_mean) * scale / edge_std
+        if data.y is not None:
+            data.y = (data.y - target_mean) * scale / target_std
 
     for feat_index in range(dataset[0].num_node_features):
         for data in dataset:
@@ -443,3 +447,77 @@ def save_json(
     # Dump the dictionary with numpy arrays to a JSON file
     with open(file_name, 'w') as json_file:
         json.dump(file, json_file)
+
+
+def parity_plot(
+        train=np.array([np.nan, np.nan]),
+        validation=np.array([np.nan, np.nan]),
+        test=np.array([np.nan, np.nan]),
+        figsize=(3, 3),
+        save_to=None
+):
+    """Plots the computed vs. predicted values for the training, validation, and testing datasets.
+
+    Args:
+        train       (list): List containing the computed and predicted values for the training dataset.
+        validation  (list): List containing the computed and predicted values for the validation dataset.
+        test        (list): List containing the computed and predicted values for the testing dataset.
+        figsize    (tuple): Size of the figure.
+
+    Returns:
+        None
+    """
+    x_train, y_train = train
+    x_val,   y_val   = validation
+    x_test,  y_test  = test
+
+    plt.figure(figsize=figsize)
+
+    if np.any(~np.isnan(train)):
+        plt.plot(x_train, y_train, '.', label='Train')
+    if np.any(~np.isnan(validation)):
+        plt.plot(x_val, y_val, '.', label='Validation')
+    if np.any(~np.isnan(test)):
+        plt.plot(x_test, y_test, '.', label='Test')
+
+    _min_, _max_ = get_min_max(train.flatten(), validation.flatten(), test.flatten())
+    plt.xlabel('Computed')
+    plt.ylabel('Predicted ')
+    plt.plot([_min_, _max_], [_min_, _max_], '-r')
+    plt.legend(loc='best')
+    if save_to is not None:
+        plt.savefig(save_to, dpi=50, bbox_inches='tight')
+    plt.show()
+
+
+def losses_plot(
+        train_losses,
+        val_losses,
+        to_log=True,
+        figsize=(3, 3),
+        save_to=None
+):
+    """Plots the training and validation losses.
+
+    Args:
+        train_losses (list): List containing the training losses.
+        val_losses   (list): List containing the validation losses.
+        to_log       (bool): If True, the losses are plotted in log scale.
+        figsize      (tuple): Size of the figure.
+
+    Returns:
+        None
+    """
+    if to_log:
+        plt.plot(np.log10(train_losses), label='Train loss')
+        plt.plot(np.log10(val_losses) , label='Val  loss')
+    else:
+        plt.plot(train_losses, label='Train loss')
+        plt.plot(val_losses,   label='Val  loss')
+
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend(loc='best')
+    if save_to is not None:
+        plt.savefig(save_to, dpi=50, bbox_inches='tight')
+    plt.show()

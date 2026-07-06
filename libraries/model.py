@@ -410,3 +410,136 @@ def extract_embeddings(
 
     # Concatenate all batch embeddings into a single array
     return np.concatenate(embeddings, axis=0)
+
+
+def load_model(
+        n_node_features,
+        pdropout=0,
+        device='cpu',
+        model_name=None,
+        mode='eval'
+):
+    # Load Graph Neural Network model
+    model = GCNN(features_channels=n_node_features, pdropout=pdropout)
+
+    if model_name is not None and os.path.exists(model_name):
+        # Load Graph Neural Network model
+        model.load_state_dict(torch.load(model_name, map_location="cpu"))
+    
+    # Moving model to device
+    model = model.to(device)
+
+    if mode == 'eval':
+        model.eval()
+    elif mode == 'train':
+        model.train()
+
+    # Allow data parallelization among multi-GPU
+    model = nn.DataParallel(model)
+    return model
+
+
+def train(
+        model,
+        criterion,
+        train_loader,
+        target_factor,
+        target_mean,
+        optimizer
+):
+    """Train the model using the provided optimizer and criterion on the training dataset.
+
+    Args:
+        model        (torch.nn.Module):             The model to train.
+        optimizer    (torch.optim.Optimizer):       The optimizer to use for updating model parameters.
+        criterion    (torch.nn.Module):             The loss function to use.
+        train_loader (torch.utils.data.DataLoader): The training dataset loader.
+
+    Returns:
+        float: The average training loss.
+    """
+    model.train()
+    train_loss = 0
+    predictions   = []
+    ground_truths = []
+    for data in train_loader:  # Iterate in batches over the training dataset
+        # Moving data to device
+        data = data.to(device)
+        
+        # Perform a single forward pass
+        out = model(data).flatten()
+        
+        # Compute the loss
+        loss = criterion(out, data.y)
+        
+        # Accumulate the training loss
+        train_loss += loss.item()
+
+        # Append predictions and ground truths to lists
+        predictions.append(out.detach().cpu().numpy())
+        ground_truths.append(data.y.detach().cpu().numpy())
+        
+        # Derive gradients
+        loss.backward()
+        
+        # Update parameters based on gradients
+        optimizer.step()
+        
+        # Clear gradients
+        optimizer.zero_grad()
+    
+    # Compute the average training loss
+    avg_train_loss = train_loss / len(train_loader)
+    
+    # Concatenate predictions and ground truths into single arrays
+    predictions   = np.concatenate(predictions)   * target_factor + target_mean
+    ground_truths = np.concatenate(ground_truths) * target_factor + target_mean
+    return avg_train_loss, predictions, ground_truths
+
+
+def test(
+        model,
+        criterion,
+        test_loader,
+        target_factor,
+        target_mean
+):
+    """Evaluate the performance of a given model on a test dataset.
+
+    Args:
+        model       (torch.nn.Module):             The model to evaluate.
+        criterion   (torch.nn.Module):             The loss function to use.
+        test_loader (torch.utils.data.DataLoader): The test dataset loader.
+
+    Returns:
+        float: The average loss on the test dataset.
+    """
+    model.eval()
+    test_loss = 0
+    predictions   = []
+    ground_truths = []
+    with torch.no_grad():
+        for data in test_loader:  # Iterate in batches over the train/test dataset
+            # Moving data to device
+            data = data.to(device)
+            
+            # Perform a single forward pass
+            out = model(data).flatten()
+            
+            # Compute the loss
+            loss = criterion(out, data.y)
+            
+            # Accumulate the training loss
+            test_loss += loss.item()
+
+            # Append predictions and ground truths to lists
+            predictions.append(out.detach().cpu().numpy())
+            ground_truths.append(data.y.detach().cpu().numpy())
+    
+    # Compute the average test loss
+    avg_test_loss = test_loss / len(test_loader)
+    
+    # Concatenate predictions and ground truths into single arrays
+    predictions   = np.concatenate(predictions)   * target_factor + target_mean
+    ground_truths = np.concatenate(ground_truths) * target_factor + target_mean
+    return avg_test_loss, predictions, ground_truths
