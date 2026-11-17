@@ -3,16 +3,18 @@ import torch as torch
 import sys
 import os
 
-import libraries.dataset as cld
-
 from torch_geometric.data    import Data
 from pymatgen.core.structure import Structure
+from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+
+import libraries.electronic as cle
 
 
 def generate_graph(
         current_path,
         label='',
-        distance_thd=6
+        distance_thd=6,
+        structure=None
 ):
     """Generate a graph from a given POSCAR file.
     
@@ -26,7 +28,8 @@ def generate_graph(
     """
 
     # Read POSCAR information
-    structure = Structure.from_file(f'{current_path}/POSCAR')
+    if structure is None:
+        structure = Structure.from_file(f'{current_path}/POSCAR')
 
     try:
         nodes, edges, attributes = graph_POSCAR_encoding(structure,
@@ -57,26 +60,25 @@ def generate_graph(
         temp.conductivity = float(np.loadtxt(ltc_file)) if os.path.isfile(ltc_file) else np.nan
         temp.centrosymmetry = int(np.loadtxt(centro_file, dtype=int)) if os.path.isfile(centro_file) else None
         temp.space_group = str(np.loadtxt(sg_file, dtype=str)) if os.path.isfile(sg_file) else None
-        
-        # Calculate and store total mass from POSCAR
-        poscar_file = f'{current_path}/POSCAR'
-        try:
-            with open(poscar_file, 'r') as pf:
-                poscar_lines = pf.readlines()
-                
-                composition = poscar_lines[5].split()
-                concentration = np.array(poscar_lines[6].split(), dtype=float)
-                
-                # Load atomic masses for calculation
-                atomic_masses = cld.load_atomic_masses('input/atomic_masses.dat')
 
-                # Calculate mass per atom (total mass divided by total number of atoms)
-                temp.mass_per_atom = sum(
-                    float(atomic_masses[el]) * conc for el, conc in zip(composition, concentration)
-                    ) / sum(concentration)
-        except (ValueError, IndexError, KeyError):
-            temp.mass_per_atom = None
+        # NEW: if the symmetry files are missing, take them from the structure itself (before: None, which crashed
+        # the centrosymmetry sum in the prediction notebook). Note that PyG does not store attributes set to None.
+        if getattr(temp, 'space_group', None) is None or getattr(temp, 'centrosymmetry', None) is None:
+            analyzer = SpacegroupAnalyzer(structure, symprec=0.1)
+            if getattr(temp, 'space_group', None) is None:
+                temp.space_group = analyzer.get_space_group_symbol()
+            if getattr(temp, 'centrosymmetry', None) is None:
+                temp.centrosymmetry = int(any(np.allclose(op.rotation_matrix, -np.eye(3))
+                                              for op in analyzer.get_point_group_operations()))
+
+        # NEW: band gap (eV) and DOS file, used for the electronic free energy and the metal/insulator classification
+        bandgap_file = f'{current_path}/bandgap'
+        temp.bandgap = float(np.loadtxt(bandgap_file)) if os.path.isfile(bandgap_file) else np.nan
+        temp.dos_file = cle.find_dos_file(current_path)
         
+        # Mean atomic mass (g/mol)
+        temp.mass_per_atom = float(structure.composition.weight) / len(structure)
+
         return temp
     except TypeError:
         return None
@@ -119,12 +121,9 @@ def get_sphere_images_tessellation(
             distance = neighbor.nn_distance
     
             if neighbor.nn_distance > 0:
-                # Append edge i->j and j->i to make it undirected
+                # get_all_neighbors is symmetric (j is a neighbour of i and i of j), so each directed edge appears once
                 edges.append([i, j])
                 attributes.append([distance])
-                if i != j:
-                    edges.append([j, i])
-                    attributes.append([distance])
     return nodes, edges, attributes
 
 

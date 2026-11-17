@@ -43,7 +43,7 @@ def create_predictions_dataset(
                     # Generate graph
                     try:
                         data = generate_graph(path_to_polymorf, label=f'{element} {polymorf}')
-                    except ValueError:
+                    except (ValueError, KeyError):
                         print(f'Error: some element is not available for {polymorf}')
                         continue
 
@@ -104,6 +104,10 @@ def standardize_dataset(
     # Number of features per graph
     n_y = dataset_std[0].y.shape[0]
 
+    # Number of nodes and edges in the whole dataset (statistics are taken over all of them)
+    n_nodes = sum(data.x.shape[0]         for data in dataset_std)
+    n_edges = sum(data.edge_attr.shape[0] for data in dataset_std)
+
     # Check if non-linear standardization
     if transformation == 'inverse-quadratic':
         for data in dataset_std:
@@ -116,15 +120,15 @@ def standardize_dataset(
     for target_index in range(n_y):
         target_mean[target_index] = sum([data.y[target_index] for data in dataset_std]) / n_graphs
 
-    edge_mean = sum([data.edge_attr.mean() for data in dataset_std]) / n_graphs
+    edge_mean = sum([data.edge_attr.sum() for data in dataset_std]) / n_edges
 
     # Compute standard deviations
     target_std = torch.zeros(n_y)
     for target_index in range(n_y):
-        var = sum([(data.y[target_index] - target_mean[target_index]).pow(2).sum() for data in dataset_std]) / (n_graphs * (n_graphs - 1))
+        var = sum([(data.y[target_index] - target_mean[target_index]).pow(2).sum() for data in dataset_std]) / (n_graphs - 1)
         target_std[target_index] = torch.sqrt(var) if var > epsilon else torch.tensor(epsilon)
 
-    edge_var = sum([(data.edge_attr - edge_mean).pow(2).sum() for data in dataset_std]) / (n_graphs * (n_graphs - 1))
+    edge_var = sum([(data.edge_attr - edge_mean).pow(2).sum() for data in dataset_std]) / n_edges
     edge_std = torch.sqrt(edge_var) if edge_var > epsilon else torch.tensor(epsilon)
 
     # In case we want to increase the values of the normalization
@@ -144,9 +148,9 @@ def standardize_dataset(
     feat_std  = torch.zeros(n_features)
     for feat_index in range(n_features):
         # Compute mean
-        temp_feat_mean = sum([data.x[:, feat_index].mean() for data in dataset_std]) / n_graphs
+        temp_feat_mean = sum([data.x[:, feat_index].sum() for data in dataset_std]) / n_nodes
         # Compute standard deviations
-        temp_feat_var = sum([(data.x[:, feat_index] - temp_feat_mean).pow(2).sum() for data in dataset_std]) / (n_graphs * (n_graphs - 1))
+        temp_feat_var = sum([(data.x[:, feat_index] - temp_feat_mean).pow(2).sum() for data in dataset_std]) / n_nodes
         temp_feat_std = torch.sqrt(temp_feat_var) if temp_feat_var > epsilon else torch.tensor(epsilon)
         # Update normalized values into the database
         for data in dataset_std:
@@ -344,24 +348,16 @@ def get_datasets(
         list: Filtered dataset containing elements corresponding to the specified labels (not ordered).
     """
 
-    subset_labels  = np.array(subset_labels)
-    dataset_labels = np.array(dataset_labels)
-    
-    dataset_idxs = []
-    for dataset_idx, dataset_label in enumerate(dataset_labels):
-        for subset_idx, subset_label in enumerate(subset_labels):
-            if dataset_label.split()[0] == subset_label:
-                dataset_idxs.append(dataset_idx)
-        if not len(subset_labels):
-            break
-    return [dataset[idx] for idx in dataset_idxs]
+    subset_labels = set(np.array(subset_labels).tolist())
+    return [data for data, dataset_label in zip(dataset, dataset_labels) if dataset_label.split()[0] in subset_labels]
 
 
 def split_dataset(
         train_ratio,
         test_ratio,
         dataset,
-        target_folder
+        target_folder,
+        seed=42
 ):
     """Splits the dataset into training, validation, and testing datasets regarding their labels.
 
@@ -381,7 +377,7 @@ def split_dataset(
     unique_labels = np.unique(material_labels)
     
     # Shuffle the list of unique labels
-    np.random.shuffle(unique_labels)
+    np.random.RandomState(seed).shuffle(unique_labels)
 
     # Define the sizes of the train and test sets
     # Corresponds to the size wrt the number of unique materials in the dataset
@@ -389,8 +385,8 @@ def split_dataset(
     test_size  = int(test_ratio  * len(unique_labels))
     
     train_labels = unique_labels[:train_size]
-    val_labels   = unique_labels[train_size:-test_size]
-    test_labels  = unique_labels[-test_size:]
+    val_labels   = unique_labels[train_size:len(unique_labels) - test_size]
+    test_labels  = unique_labels[len(unique_labels) - test_size:]
     
     # Save this splitting for transfer-learning approaches
     np.savetxt(f'{target_folder}/train_labels.txt',      train_labels, fmt='%s')
@@ -521,3 +517,129 @@ def losses_plot(
     if save_to is not None:
         plt.savefig(save_to, dpi=50, bbox_inches='tight')
     plt.show()
+
+
+def split_dataset_kfold(
+        n_splits,
+        fold_idx,
+        dataset,
+        target_folder,
+        val_ratio=0.1,
+        seed=42
+):
+    """Same output as split_dataset, but the test set is fold ``fold_idx`` of a k-fold cross-validation.
+
+    Whole materials (all polymorphs and temperatures) are assigned to folds, so nothing leaks between folds. The
+    fold assignment is computed once and saved to ``kfold_splits_n{n_splits}.json``; every later call (e.g., one
+    per fold, each in a fresh kernel) reads the same assignment. A fraction ``val_ratio`` of the training materials is
+    used as validation set (early stopping), so the held-out fold plays no role in training.
+
+    Args:
+        n_splits      (int):   Number of folds.
+        fold_idx      (int):   Fold used as test set.
+        dataset       (list):  List of graphs in PyTorch Geometric's Data format.
+        target_folder (str):   Folder where the fold assignment is stored.
+        val_ratio     (float): Fraction of the training materials used as validation.
+
+    Returns:
+        Tuple: training, validation and testing datasets.
+    """
+    material_labels = [data.label.split()[0] for data in dataset]
+    unique_labels   = np.unique(material_labels)
+
+    splits_file = f'{target_folder}/kfold_splits_n{n_splits}.json'
+    if os.path.exists(splits_file):
+        with open(splits_file, 'r') as f:
+            folds = json.load(f)['folds']
+        if sorted(sum(folds, [])) != sorted(unique_labels.tolist()):
+            raise RuntimeError(f'{splits_file} does not match the materials of this dataset: delete it to recompute')
+    else:
+        shuffled = unique_labels.copy()
+        np.random.RandomState(seed).shuffle(shuffled)
+        folds = [fold.tolist() for fold in np.array_split(shuffled, n_splits)]
+        with open(splits_file, 'w') as f:
+            json.dump({'n_splits': n_splits, 'seed': seed, 'folds': folds}, f)
+
+    test_labels = np.array(folds[fold_idx])
+    rest_labels = np.array([label for i, fold in enumerate(folds) if i != fold_idx for label in fold])
+    np.random.RandomState(seed + fold_idx).shuffle(rest_labels)
+    n_val        = max(1, int(round(val_ratio * len(rest_labels))))
+    val_labels   = rest_labels[:n_val]
+    train_labels = rest_labels[n_val:]
+
+    return (get_datasets(train_labels, material_labels, dataset),
+            get_datasets(val_labels,   material_labels, dataset),
+            get_datasets(test_labels,  material_labels, dataset))
+
+
+def get_uids(
+        dataset,
+        standardized_parameters
+):
+    """Unique identifier of every graph of a standardized dataset: 'material polymorph temperature'.
+
+    The temperature is the last node feature, so it is de-standardized with the parameters of that dataset. The same
+    (material, polymorph, temperature) gets the same uid whatever standardization was used, which is what allows
+    matching out-of-fold predictions from different folds.
+    """
+    t_mean = float(standardized_parameters['feat_mean'][-1])
+    t_std  = float(standardized_parameters['feat_std'][-1])
+    scale  = float(standardized_parameters['scale'])
+    return [f'{data.label} {round(float(data.x[0, -1]) * t_std / scale + t_mean, 2)}' for data in dataset]
+
+
+def generate_dataset(
+        path_to_database,
+        targets=['free-energy'],
+        data_folder='model',
+        temperatures=np.arange(100, 701, 50),
+        free_energy_units='meV/atom',
+        frequency_units='THz'
+):
+    """Generate the raw training dataset ``{data_folder}/dataset.pt`` from a Pheasy-like database.
+
+    One graph per (polymorph, temperature): the temperature is appended as the last node feature, ``y`` is the
+    vibrational free energy (meV/atom) and the label is 'material polymorph'. This is the format the training
+    notebook already expected. Each entry is a folder with a structure and either a free-energy table or a phonon DOS
+    (see libraries/pheasy.py, which reports every entry it could not read).
+
+    Args:
+        path_to_database  (str):   Root of the database (entries can be at any depth).
+        targets           (list):  Kept for compatibility; only 'free-energy' is available.
+        data_folder       (str):   Where dataset.pt is written.
+        temperatures      (array): Temperatures (K) of the training targets.
+    """
+    from collections import Counter
+    import libraries.pheasy as pheasy
+
+    dataset = []
+    skipped = Counter()
+    for folder in pheasy.entry_folders(path_to_database):
+        record, reason = pheasy.read_entry(folder, temperatures, free_energy_units, frequency_units)
+        if record is None:
+            skipped[reason] += 1
+            continue
+
+        structure = record['structure']
+        material  = structure.composition.reduced_formula
+        polymorph = os.path.relpath(folder, path_to_database).replace(os.sep, '_').replace(' ', '_')
+        try:
+            graph = generate_graph(folder, label=f'{material} {polymorph}', structure=structure)
+        except (ValueError, KeyError) as error:
+            skipped[f'graph: {error}'] += 1
+            continue
+        if graph is None:
+            skipped['graph: missing element features'] += 1
+            continue
+
+        for temperature, free_energy in zip(record['temperatures'], record['fv']):
+            data   = add_features_to_graph(graph, torch.tensor([temperature], dtype=torch.float))
+            data.y = torch.tensor([free_energy], dtype=torch.float)
+            dataset.append(data)
+
+    print(f'{len(dataset)} graphs generated')
+    for reason, n in skipped.items():
+        print(f'  skipped {n} entries: {reason}')
+
+    os.makedirs(data_folder, exist_ok=True)
+    torch.save(dataset, f'{data_folder}/dataset.pt')

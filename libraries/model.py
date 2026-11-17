@@ -8,7 +8,10 @@ from scipy.interpolate      import RBFInterpolator
 from scipy.optimize         import curve_fit
 from torch_geometric.loader import DataLoader
 from torch.nn               import Linear
-from torch_geometric.nn     import GraphConv, global_mean_pool
+from torch_geometric.nn     import TransformerConv, global_mean_pool
+from torch_geometric.nn.aggr import AttentionalAggregation
+
+import libraries.electronic as cle
 
 # Checking if pytorch can run in GPU, else CPU
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -17,19 +20,35 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 class GCNN(
     torch.nn.Module
 ):
-    """Graph convolution neural network.
+    """Graph neural network.
+
+    Message passing is a stack of pre-norm residual blocks. Each block has
+        1) multi-head graph attention that uses the edge features (TransformerConv, with a learned gate between the
+           aggregated message and the node's own features, beta=True), and
+        2) a gated (GLU) feed-forward layer.
+    The edge attribute (standardized inverse squared distance) goes through a small MLP, so its sign no longer
+    matters. Pooling concatenates the global mean and a learned soft-attention pooling. The temperature is still the
+    last node feature. The linear head (and the 16-d graph embedding used for the uncertainty) is unchanged.
     """
     
     def __init__(
             self,
             features_channels,
-            pdropout
+            pdropout,
+            hidden_channels=128,
+            heads=4,
+            n_layers=3,
+            edge_channels=32
     ):
-        """Initializes the Graph Convolutional Neural Network.
+        """Initializes the Graph Neural Network.
 
         Args:
             features_channels (int):   Number of input features.
             pdropout          (float): Dropout probability for regularization.
+            hidden_channels   (int):   Width of the message-passing layers.
+            heads             (int):   Attention heads.
+            n_layers          (int):   Number of message-passing blocks.
+            edge_channels     (int):   Width of the edge embedding.
 
         Returns:
             None
@@ -40,12 +59,24 @@ class GCNN(
         # Set random seed for reproducibility
         torch.manual_seed(12345)
         
-        # Define graph convolution layers
-        self.conv1 = GraphConv(features_channels, 512)
-        self.conv2 = GraphConv(512, 512)
+        # Node and edge embeddings
+        self.embed      = Linear(features_channels, hidden_channels)
+        self.edge_embed = nn.Sequential(Linear(1, edge_channels), nn.SiLU(), Linear(edge_channels, edge_channels))
+        
+        # Message-passing blocks
+        self.attn_norms = nn.ModuleList([nn.LayerNorm(hidden_channels) for _ in range(n_layers)])
+        self.convs      = nn.ModuleList([TransformerConv(hidden_channels, hidden_channels // heads, heads=heads,
+                                                         edge_dim=edge_channels, beta=True)
+                                         for _ in range(n_layers)])
+        self.ffn_norms  = nn.ModuleList([nn.LayerNorm(hidden_channels) for _ in range(n_layers)])
+        self.ffn_in     = nn.ModuleList([Linear(hidden_channels, 2 * hidden_channels) for _ in range(n_layers)])
+        self.ffn_out    = nn.ModuleList([Linear(hidden_channels, hidden_channels) for _ in range(n_layers)])
+        
+        # Attention pooling
+        self.pool = AttentionalAggregation(gate_nn=Linear(hidden_channels, 1))
         
         # Define linear layers
-        self.linconv1 = Linear(512, 64)
+        self.linconv1 = Linear(2 * hidden_channels, 64)
         self.linconv2 = Linear(64, 16)
         self.lin      = Linear(16, 1)
         
@@ -56,18 +87,19 @@ class GCNN(
             batch,
             return_graph_embedding=False
     ):
-        ## CONVOLUTION
+        ## MESSAGE PASSING
         
-        # Apply graph convolution with ReLU activation function
-        x = self.conv1(batch.x, batch.edge_index, batch.edge_attr)
-        x = x.relu()
-        x = self.conv2(x, batch.edge_index, batch.edge_attr)
-        x = x.relu()
+        x = self.embed(batch.x)
+        e = self.edge_embed(batch.edge_attr)
+        for attn_norm, conv, ffn_norm, ffn_in, ffn_out in zip(self.attn_norms, self.convs, self.ffn_norms,
+                                                              self.ffn_in, self.ffn_out):
+            x = x + conv(attn_norm(x), batch.edge_index, e)
+            x = x + ffn_out(F.glu(ffn_in(ffn_norm(x)), dim=-1))
 
         ## POOLING
         
-        # Apply global mean pooling to reduce dimensionality
-        x = global_mean_pool(x, batch.batch)  # [batch_size, hidden_channels]
+        # Global mean pooling and soft-attention pooling
+        x = torch.cat([global_mean_pool(x, batch.batch), self.pool(x, batch.batch)], dim=-1)  # [batch_size, 2 * hidden_channels]
 
         # Apply dropout regularization
         x = F.dropout(x, p=self.pdropout, training=self.training)
@@ -168,7 +200,7 @@ def predict_single_material(
     from libraries.dataset import standardize_dataset_from_keys, include_temperatures
     
     # Standardize the single data point
-    std_data = standardize_dataset_from_keys([data], standardized_parameters)[0]
+    std_data = standardize_dataset_from_keys([data.clone()], standardized_parameters)[0]  # clone: the input graph is left untouched
     
     # Include temperatures to create batch
     std_data_w_temp = include_temperatures([std_data], temperatures, standardized_parameters)
@@ -182,11 +214,19 @@ def predict_single_material(
     max_uncert    = np.max(np.abs(uncertainties))
     uncertainties = np.ones(len(temperatures)) * max_uncert
     
+    # NEW: electronic free energy from the DOS (zero when the material has no DOS file), meV/atom.
+    # The smooth fit below is done on F_v + F_el, so the transitions include the electronic contribution.
+    electronic = np.zeros(len(temperatures))
+    if getattr(data, 'dos_file', None):
+        electronic = cle.electronic_free_energy_from_file(data.dos_file, temperatures, natoms=data.x.size(0),
+                                                          bandgap=getattr(data, 'bandgap', None))
+    
     # Compute coefficients - compute_coefficients expects predictions for single material
-    coefficients = compute_coefficients(temperatures, predictions)
+    coefficients = compute_coefficients(temperatures, predictions + electronic)
     
     # Add to original data object
     data.predictions   = predictions
+    data.electronic    = electronic
     data.uncertainties = uncertainties
     data.coefficients  = coefficients
     
@@ -240,25 +280,23 @@ def Helmholtz_free_energy_function(
         beta,
         gamma
 ):
-    """Smoothes the Helmholtz free energy with a physically informed function.
-    The parameters beta and gamma are defined positively and re-scaled for improved fitting.
+    """Smoothes the Helmholtz free energy with a physically informed function: alpha + beta T^2 + gamma T^4.
+    The parameters beta and gamma are re-scaled for improved fitting.
+    They are no longer forced to be negative: that was fine for F_v alone, but the electronic free energy of a metal
+    has a positive T^4 term (Sommerfeld expansion), so the constraint would give a wrong fit of F_v + F_el.
 
     Args:
         x     (ndarray): The input array containing temperature data.
         alpha (float):   A parameter defining the baseline energy level.
-        beta  (float):   A positive parameter controlling the quadratic term.
-        gamma (float):   A positive parameter controlling the quartic term.
+        beta  (float):   A parameter controlling the quadratic term (scaled by 1e-5).
+        gamma (float):   A parameter controlling the quartic term (scaled by 1e-10).
 
     Returns:
         smoothed_energy (ndarray): An array of smoothed Helmholtz free energy values.
     """
-    # Define beta, gamma positively
-    beta  = - np.abs(beta)
-    gamma = - np.abs(gamma)
-
     # Re-scale variables
-    beta  *= 1e-5
-    gamma *= 1e-10
+    beta  = beta  * 1e-5
+    gamma = gamma * 1e-10
     return alpha + beta * x ** 2 + gamma * x ** 4
 
 
@@ -267,7 +305,6 @@ def compute_coefficients(
         predictions
 ):
     """Smooth the predictions and obtain parameters from Helmholtz_free_energy_function.
-    Beta and gamma are set to negative, which actually does not change anything at Helmholtz_free_energy_function fitting.
     
     Args:
         temperatures (list):          List of temperatures.
@@ -293,8 +330,6 @@ def compute_coefficients(
                                          p0=(1, 0, 0),
                                          maxfev=3000)
 
-            # Make beta and gamma negative, which actually does not change anything in Helmholtz_free_energy_function
-            _beta_[1:] = - np.abs(_beta_[1:])
         except RuntimeError:  # Convergence not achieved
             _beta_ = [np.nan]*3
 
@@ -357,7 +392,8 @@ def estimate_uncertainty(
 def fit_interpolator(
     r_uncertainty_data,
     r_dataset,
-    model
+    model,
+    neighbors=None
 ):
     """
     Fit RBFInterpolator to reference uncertainties.
@@ -366,6 +402,8 @@ def fit_interpolator(
         r_uncertainty_data (dict):            Uncertainty data for the reference dataset.
         r_dataset          (list):            Reference dataset, as a list of graphs in PyTorch Geometric's Data format.
         model              (torch.nn.Module): The trained model.
+        neighbors          (int):             If given, each query uses only its nearest `neighbors` reference points
+                                              (the default, all points, needs O(N^2) memory).
 
     Returns:
         RBFInterpolator: Fitted RBFInterpolator object.
@@ -380,7 +418,7 @@ def fit_interpolator(
     r_uncertainties = np.asarray([r_uncertainty_data[label] for label in r_labels])
 
     # Interpolate uncertainties for the target dataset
-    interpolator = RBFInterpolator(r_embeddings, r_uncertainties, smoothing=0)
+    interpolator = RBFInterpolator(r_embeddings, r_uncertainties, smoothing=0, neighbors=neighbors)
     return interpolator
 
 
@@ -543,3 +581,72 @@ def test(
     predictions   = np.concatenate(predictions)   * target_factor + target_mean
     ground_truths = np.concatenate(ground_truths) * target_factor + target_mean
     return avg_test_loss, predictions, ground_truths
+
+
+class EarlyStopping():
+    def __init__(
+            self,
+            patience=5,
+            delta=0,
+            wandb_run=None,
+            model_name='model.pt'
+    ):
+        """Initializes the EarlyStopping object. Saves a model if accuracy is improved.
+        Declares early_stop = True if training does not improve in patience steps within a delta threshold.
+
+        Args:
+            patience   (int):          Number of steps with no improvement.
+            delta      (float):        Threshold for a score to be considered an improvement.
+            wandb_run  (wandb object): Optional WandB run object for logging.
+            model_name (str):          Name of the saved model checkpoint file.
+        """
+        self.patience = patience  # Number of steps with no improvement
+        self.delta = delta  # Threshold for a score to be an improvement
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.val_loss_min = np.inf
+        self.wandb_run = wandb_run
+        self.model_name = model_name
+
+    def __call__(
+            self,
+            val_loss,
+            model
+    ):
+        """Call method to check and update early stopping.
+
+        Args:
+            val_loss (float):           Current validation loss.
+            model    (torch.nn.Module): The PyTorch model being trained.
+        """
+        if self.best_score is None:
+            self.best_score = val_loss
+            self.save_checkpoint(val_loss, model)
+        elif val_loss > self.best_score + self.delta:
+            self.counter += 1
+            if self.wandb_run:
+                self.wandb_run.log({'Early Stopping Counter': self.counter})
+
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = val_loss
+            self.save_checkpoint(val_loss, model)
+            self.counter = 0
+
+    def save_checkpoint(
+            self,
+            val_loss,
+            model
+    ):
+        """Save the model checkpoint if the validation loss has decreased.
+        It uses model.module, allowing models loaded to nn.DataParallel.
+
+        Args:
+            val_loss (float):           Current validation loss.
+            model    (torch.nn.Module): The PyTorch model being trained.
+        """
+        if val_loss < self.val_loss_min:
+            torch.save(model.module.state_dict(), self.model_name)
+            self.val_loss_min = val_loss
