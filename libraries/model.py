@@ -233,6 +233,40 @@ def predict_single_material(
     return data
 
 
+def transition_temperatures(
+        d_E0_alpha,
+        d_beta,
+        d_gamma
+):
+    """Temperatures (K) at which two polymorphs have the same free energy: d_E0_alpha + d_beta T^2 + d_gamma T^4 = 0.
+
+    The roots of the quadratic in T^2 are computed with the numerically stable form (the textbook formula loses the
+    small root to cancellation when d_gamma is small, and divides by zero when it vanishes), and only real, positive
+    ones are returned, as T.
+
+    Args:
+        d_E0_alpha (float): E0 + alpha difference between the two polymorphs (meV/atom).
+        d_beta     (float): Difference in beta coefficients (scaled by 1e-5, already re-scaled to meV/K^2 here).
+        d_gamma    (float): Difference in gamma coefficients (already re-scaled to meV/K^4).
+
+    Returns:
+        numpy.ndarray: Sorted transition temperatures.
+    """
+    c, b, a = d_E0_alpha, d_beta, d_gamma
+    if not np.all(np.isfinite([a, b, c])):
+        return np.array([])
+
+    if a == 0:  # Linear in T^2
+        roots = [-c / b] if b != 0 else []
+    else:
+        discriminant = b ** 2 - 4 * a * c
+        if discriminant < 0:
+            return np.array([])
+        q = -0.5 * (b + (1.0 if b >= 0 else -1.0) * np.sqrt(discriminant))
+        roots = [q / a] + ([c / q] if q != 0 else [])
+    return np.sort(np.sqrt([x for x in roots if x > 0]))
+
+
 def compute_transition_temperature_uncertainty(
         d_E0,
         d_alpha,
@@ -242,10 +276,11 @@ def compute_transition_temperature_uncertainty(
         c_temperature
 ):
     """Compute uncertainty in transition temperature given free energy uncertainty.
-    
-    Solves the quadratic equation for transition temperature with uncertainty bounds
-    and returns the minimum absolute deviation from the critical temperature.
-    
+
+    The free-energy difference is shifted by -uncert_Fv and +uncert_Fv; in each case the root closest to the critical
+    temperature (the same branch) is taken, and the larger of the two deviations is returned. Before it returned the
+    smallest deviation over the four roots of the two shifted equations, i.e. the less conservative side only.
+
     Args:
         d_E0          (float): Difference in ground state energies (meV/atom).
         d_alpha       (float): Difference in alpha coefficients.
@@ -253,25 +288,18 @@ def compute_transition_temperature_uncertainty(
         d_gamma       (float): Difference in gamma coefficients (scaled by 1e-10).
         uncert_Fv     (float): Uncertainty in free energy (meV/atom).
         c_temperature (float): Critical transition temperature (K).
-    
+
     Returns:
-        float: Uncertainty in transition temperature (K), or np.nan if no valid roots.
+        float: Uncertainty in transition temperature (K), or np.nan if the transition disappears (no real root)
+            within the free-energy uncertainty.
     """
-    # Two possible transition temperatures for negative uncertainty
-    root_1_n = (-d_beta + np.sqrt(d_beta**2 - 4 * (d_E0 + d_alpha - uncert_Fv) * d_gamma)) / (2 * d_gamma)
-    root_2_n = (-d_beta - np.sqrt(d_beta**2 - 4 * (d_E0 + d_alpha - uncert_Fv) * d_gamma)) / (2 * d_gamma)
-    
-    # Two possible transition temperatures for positive uncertainty
-    root_1_p = (-d_beta + np.sqrt(d_beta**2 - 4 * (d_E0 + d_alpha + uncert_Fv) * d_gamma)) / (2 * d_gamma)
-    root_2_p = (-d_beta - np.sqrt(d_beta**2 - 4 * (d_E0 + d_alpha + uncert_Fv) * d_gamma)) / (2 * d_gamma)
-    
-    # Filter valid (real and positive) temperatures
-    uncert_temperature = np.array(
-        [x for x in [np.sqrt(root_1_n), np.sqrt(root_2_n), np.sqrt(root_1_p), np.sqrt(root_2_p)] if x >= 0]
-    )
-    
-    # Return minimum deviation from critical temperature
-    return np.min(np.abs(uncert_temperature - c_temperature)) if len(uncert_temperature) > 0 else np.nan
+    deviations = []
+    for shift in (-uncert_Fv, uncert_Fv):
+        roots = transition_temperatures(d_E0 + d_alpha + shift, d_beta, d_gamma)
+        if not len(roots):
+            return np.nan
+        deviations.append(np.min(np.abs(roots - c_temperature)))
+    return max(deviations)
 
 
 def Helmholtz_free_energy_function(
@@ -330,7 +358,7 @@ def compute_coefficients(
                                          p0=(1, 0, 0),
                                          maxfev=3000)
 
-        except RuntimeError:  # Convergence not achieved
+        except (RuntimeError, ValueError):  # Convergence not achieved, or NaN/inf in the data (e.g. a failed F_el)
             _beta_ = [np.nan]*3
 
         # Append coefficients and metrics
@@ -462,7 +490,7 @@ def load_model(
 
     if model_name is not None and os.path.exists(model_name):
         # Load Graph Neural Network model
-        model.load_state_dict(torch.load(model_name, map_location="cpu"))
+        model.load_state_dict(torch.load(model_name, map_location="cpu", weights_only=True))  # weights only: no code execution
     
     # Moving model to device
     model = model.to(device)
@@ -472,8 +500,9 @@ def load_model(
     elif mode == 'train':
         model.train()
 
-    # Allow data parallelization among multi-GPU
-    model = nn.DataParallel(model)
+    # NOTE: nn.DataParallel was removed. It cannot split a PyG batch (it hands the whole batch to every GPU and
+    # concatenates the outputs, so out and data.y have different sizes on multi-GPU machines), and it prefixed
+    # the saved state-dict keys with 'module.'.
     return model
 
 
@@ -648,5 +677,5 @@ class EarlyStopping():
             model    (torch.nn.Module): The PyTorch model being trained.
         """
         if val_loss < self.val_loss_min:
-            torch.save(model.module.state_dict(), self.model_name)
+            torch.save(getattr(model, 'module', model).state_dict(), self.model_name)  # also works for a DataParallel-wrapped model
             self.val_loss_min = val_loss

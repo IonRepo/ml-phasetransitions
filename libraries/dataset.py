@@ -4,8 +4,11 @@ import numpy as np
 import torch as torch
 import json
 import os
+import pandas as pd
 
 from torch_geometric.data    import Data
+from torch_geometric.data.data    import DataEdgeAttr, DataTensorAttr
+from torch_geometric.data.storage import GlobalStorage, NodeStorage, EdgeStorage
 from libraries.graph import generate_graph, add_features_to_graph, graph_POSCAR_encoding
 
 def create_predictions_dataset(
@@ -313,6 +316,38 @@ def get_min_max(*data):
     return _min_, _max_
 
 
+def load_graphs(
+        path
+):
+    """Load a list of graphs saved with torch.save, with weights_only=True.
+
+    torch.load(..., weights_only=False) unpickles arbitrary Python objects, so a dataset file from an untrusted source
+    (a shared .pt, a downloaded database) could execute code when loaded. Only the PyG graph classes are allowed here;
+    anything else (e.g. numpy arrays stored in a graph) fails with a clear error instead of being executed.
+    """
+    with torch.serialization.safe_globals([Data, DataEdgeAttr, DataTensorAttr, GlobalStorage, NodeStorage, EdgeStorage]):
+        return torch.load(path, weights_only=True)
+
+
+def to_excel_safe(
+        df,
+        path,
+        **kwargs
+):
+    """DataFrame.to_excel that neutralizes spreadsheet formula injection.
+
+    Labels come from folder names of the database; openpyxl writes any string starting with '=' as a formula (which can
+    run e.g. HYPERLINK/external-data functions when the file is opened), and Excel also interprets '+', '-' and '@'.
+    Such strings are prefixed with an apostrophe-like single quote so they stay text.
+    """
+    df = df.copy()
+    for column in df.columns:
+        if not pd.api.types.is_numeric_dtype(df[column]) and not pd.api.types.is_bool_dtype(df[column]):  # object or string dtype
+            df[column] = df[column].map(
+                lambda v: "'" + v if isinstance(v, str) and v[:1] in ('=', '+', '-', '@', '\t', '\r') else v)
+    df.to_excel(path, **kwargs)
+
+
 def load_datasets(
         files_names
 ):
@@ -324,9 +359,9 @@ def load_datasets(
     Returns:
         Tuple: A tuple containing the training, validation, and testing datasets
     """
-    train_dataset = torch.load(files_names['train_dataset_std'], weights_only=False)
-    val_dataset   = torch.load(files_names['val_dataset_std'],   weights_only=False)
-    test_dataset  = torch.load(files_names['test_dataset_std'],  weights_only=False)
+    train_dataset = load_graphs(files_names['train_dataset_std'])
+    val_dataset   = load_graphs(files_names['val_dataset_std'])
+    test_dataset  = load_graphs(files_names['test_dataset_std'])
 
     standardized_parameters = load_json(files_names['std_parameters'])
     return train_dataset, val_dataset, test_dataset, standardized_parameters

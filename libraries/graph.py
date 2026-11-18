@@ -75,12 +75,23 @@ def generate_graph(
         bandgap_file = f'{current_path}/bandgap'
         temp.bandgap = float(np.loadtxt(bandgap_file)) if os.path.isfile(bandgap_file) else np.nan
         temp.dos_file = cle.find_dos_file(current_path)
+
+        # NEW: magnetic ordering ('FM', 'AFM', 'FiM', 'NM', 'Unknown') and total magnetization (mu_B / formula unit) from
+        # Materials Project; used only to flag magnetic materials (the free energy has no magnetic contribution)
+        ordering_file, magnetization_file = f'{current_path}/ordering', f'{current_path}/total_magnetization'
+        temp.ordering = open(ordering_file).read().strip() if os.path.isfile(ordering_file) else 'Unknown'
+        temp.total_magnetization = float(np.loadtxt(magnetization_file)) if os.path.isfile(magnetization_file) else np.nan
         
         # Mean atomic mass (g/mol)
         temp.mass_per_atom = float(structure.composition.weight) / len(structure)
 
+        # NEW: volume per atom (A^3), used to convert doping levels to cm^-3 in the thermoelectric screening
+        temp.volume_per_atom = float(structure.volume) / len(structure)
+
         return temp
-    except TypeError:
+    except TypeError as error:
+        # Before this was silent: any TypeError (not only the expected one) dropped the material without a trace
+        print(f'Warning: graph of {label or current_path} not generated ({error})')
         return None
 
 
